@@ -24,6 +24,12 @@ require 'mechanize'
 # MODIFY YOUR NATIVE LANGUAGE
 NATIVE_LANGUAGE = 'en'
 
+# Max pages to fetch, just in case it goes into infinite loop
+MAX_PAGES = 100
+
+# Time to sleep between fetches to make it talk gently to iTunes Store server
+SLEEP_INTERVAL = 1.0
+
 # MODIFY THIS HASH WITH YOUR APP SET (grab the itunes store urls & pull the id params)
 software = {
   # http://phobos.apple.com/WebObjects/MZStore.woa/wa/viewSoftware?id=289923007&mt=8
@@ -106,20 +112,28 @@ end
 
 # return a rating/subject/author/body hash
 def fetch_reviews(software_id, store)
+  # TODO: parameterize type=Purple+Software
+  url = "http://ax.phobos.apple.com.edgesuite.net/WebObjects/MZStore.woa/wa/viewContentsUserReviews?id=#{software_id}&pageNumber=0&sortOrdering=2&type=Purple+Software"
+  MAX_PAGES.times do |page|
+    reviews, url = fetch_reviews_from_url(url, page, software_id, store)
+    yield reviews unless reviews.empty?
+    break if url.nil?
+    sleep SLEEP_INTERVAL
+  end
+end
+
+def fetch_reviews_from_url(url, page, software_id, store)
   reviews = []
   
-  # TODO: parameterize type=Purple+Software
-  cmd = sprintf(%{curl -s -A "iTunes/4.2 (Macintosh; U; PPC Mac OS X 10.2" -H "X-Apple-Store-Front: %s-1" } <<
-                %{'http://ax.phobos.apple.com.edgesuite.net/WebObjects/MZStore.woa/wa/viewContentsUserReviews?id=%s&} <<
-                %{pageNumber=0&sortOrdering=2&type=Purple+Software' | gunzip | } <<
-                %{xmllint --format --recover - 2>null},
-                store[:id],
-                software_id)
+  raise "bad url: #{url}" if url =~ /\'/
+  cmd = %{curl -s -A "iTunes/4.2 (Macintosh; U; PPC Mac OS X 10.2" -H "X-Apple-Store-Front: #{store[:id]}-1" } <<
+        %{'#{url}' | gunzip | } <<
+        %{xmllint --format --recover - 2>/dev/null}
 
   rawxml = `#{cmd}`
   
   if defined?(DEBUG) && DEBUG == true
-    open("appreview.#{software_id}.#{store[:id]}.xml", 'w') { |f| f.write(rawxml) }
+    open("appreview.#{software_id}.#{store[:id]}.#{page}.xml", 'w') { |f| f.write(rawxml) }
   end
   
   doc = Hpricot.XML(rawxml)
@@ -144,16 +158,21 @@ def fetch_reviews(software_id, store)
     review[:author]  = subset[1].inner_text.strip[/by (.*)/, 1]
     review[:body]    = subset.last.inner_html.gsub("<br />", "\n").strip
     
-    if ! store[:language].empty? && store[:language] != NATIVE_LANGUAGE
-      review[:subject] = translate( :from => store[:language], :to => NATIVE_LANGUAGE, :text => review[:subject] )
-      review[:body]    = translate( :from => store[:language], :to => NATIVE_LANGUAGE, :text => review[:body] )
-      review[:body].gsub!("<br />", "\n")  # br's reintroduced by Translate
-    end
+#    if ! store[:language].empty? && store[:language] != NATIVE_LANGUAGE
+#      review[:subject] = translate( :from => store[:language], :to => NATIVE_LANGUAGE, :text 
+#      review[:body]    = translate( :from => store[:language], :to => NATIVE_LANGUAGE, :text 
+#      review[:body].gsub!("<br />", "\n")  # br's reintroduced by Translate
+#    end
     
     reviews << review
   end
 
-  reviews
+  next_url = nil
+  more = doc.search("//GotoURL[text()='More Reviews']")
+  more = doc.search("//GotoURL[text()='More']") if more.empty?
+  next_url = more[0].attributes["url"] unless more.empty?
+
+  [reviews, next_url]
 end
 
 # a simple command-line presentation
@@ -161,15 +180,19 @@ software.keys.sort.each do |software_key|
   puts "== App: #{software_key}"
 
   stores.sort_by { |a| a[:name] }.each do |store|
-    reviews = fetch_reviews(software[software_key], store)
+    sleep SLEEP_INTERVAL
 
-    if reviews.any?
-      puts "=== Store: #{store[:name]}"
-      
-      reviews.each_with_index do |review, index|
+    first = true
+    fetch_reviews(software[software_key], store) do |reviews|
+      reviews.each do |review|
+        if first
+          puts "=== Store: #{store[:name]}"
+          first = false
+        else
+          puts "--"
+        end
         puts sprintf(%{%s %s, "%s", by %s}, review[:rating], review[:rating] > 1 ? "stars" : "star", review[:subject], review[:author])
         puts review[:body]
-        puts "--\n" if index + 1 < reviews.size
       end
     end
   end
