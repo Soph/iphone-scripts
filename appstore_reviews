@@ -127,7 +127,7 @@ def fetch_reviews_from_url(url, page, software_id, store)
   
   raise "bad url: #{url}" if url =~ /\'/
   cmd = %{curl -s -A "iTunes/4.2 (Macintosh; U; PPC Mac OS X 10.2" -H "X-Apple-Store-Front: #{store[:id]}-1" } <<
-        %{'#{url}' | gunzip | } <<
+        %{'#{url}' | } <<
         %{xmllint --format --recover - 2>/dev/null}
 
   rawxml = `#{cmd}`
